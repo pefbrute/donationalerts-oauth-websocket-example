@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DonationAlerts OAuth Example</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            line-height: 1.6;
+            padding: 20px;
+        }
+        
+        #auth-status,
+        #listener-status,
+        #ws-status {
+            margin-bottom: 15px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        
+        .status-ok {
+            background-color: #e7f7e7;
+            border-color: #a0d8a0;
+        }
+        
+        .status-warn {
+            background-color: #fff3e0;
+            border-color: #ffcc80;
+        }
+        
+        .status-error {
+            background-color: #fdecea;
+            border-color: #f5a8a6;
+        }
+        
+        button {
+            padding: 10px 15px;
+            cursor: pointer;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            background-color: #f0f0f0;
+            margin-right: 10px;
+        }
+        
+        button:hover {
+            background-color: #e0e0e0;
+        }
+        
+        #donations-log {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px dashed #eee;
+            min-height: 200px;
+            background-color: #f9f9f9;
+        }
+        
+        .donation-item {
+            border-bottom: 1px solid #eee;
+            padding: 8px 0;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+        
+        .donation-item:last-child {
+            border-bottom: none;
+        }
+        
+        .donation-meta {
+            font-size: 0.8em;
+            color: #666;
+        }
+        
+        .error-message {
+            color: red;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>DonationAlerts OAuth Example</h1>
+
+    <div id="auth-section">
+        <div id="auth-status">Auth Status: Checking...</div>
+        <button id="login-button" style="display: none;">Login with DonationAlerts</button>
+        <button id="logout-button" style="display: none;">Logout</button>
+    </div>
+
+    <div id="listener-section" style="display: none;">
+        <div id="listener-status">Listener Status: Unknown</div>
+        <div id="ws-status">WebSocket Status: Disconnected</div>
+    </div>
+
+    <div id="donations-log-container" style="display: none;">
+        <h2>Received Donations:</h2>
+        <div id="donations-log">
+            <!-- Donations will appear here -->
+            <p><i>Waiting for donations...</i></p>
+        </div>
+    </div>
+
+    <div id="error-display" class="error-message"></div>
+
+    <script>
+        const authStatusDiv = document.getElementById('auth-status');
+        const listenerStatusDiv = document.getElementById('listener-status');
+        const wsStatusDiv = document.getElementById('ws-status');
+        const loginButton = document.getElementById('login-button');
+        const logoutButton = document.getElementById('logout-button');
+        const listenerSection = document.getElementById('listener-section');
+        const donationsLogContainer = document.getElementById('donations-log-container');
+        const donationsLog = document.getElementById('donations-log');
+        const errorDisplay = document.getElementById('error-display');
+
+        let ws = null;
+        let isAuthenticated = false; // Track auth state
+
+        function setStatus(element, text, className) {
+            element.textContent = text;
+            element.className = className; // Remove previous classes
+        }
+
+        function addDonationEntry(donation) {
+            // Clear the initial 'Waiting...' message
+            if (donationsLog.querySelector('p i')) {
+                donationsLog.innerHTML = '';
+            }
+
+            const item = document.createElement('div');
+            item.classList.add('donation-item');
+
+            const sender = donation.username || donation.name || 'Anonymous';
+            const amount = `${donation.amount} ${donation.currency}`;
+            const message = donation.message || '<i>No message</i>';
+            const time = donation.created_at || new Date().toLocaleString();
+            const id = donation.id || 'N/A';
+
+            item.innerHTML = `
+                <strong>${sender}</strong> donated <strong>${amount}</strong>
+                <p style="margin: 5px 0;">${message}</p>
+                <div class="donation-meta">ID: ${id} | Time: ${time}</div>
+            `;
+            // Prepend new donations
+            donationsLog.insertBefore(item, donationsLog.firstChild);
+        }
+
+        function connectWebSocket() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                console.log("WebSocket connection already open or opening.");
+                return;
+            }
+
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+            ws = new WebSocket(wsUrl);
+            setStatus(wsStatusDiv, 'WebSocket Status: Connecting...', 'status-warn');
+
+            ws.onopen = function(event) {
+                console.log("WebSocket connection opened.");
+                setStatus(wsStatusDiv, 'WebSocket Status: Connected', 'status-ok');
+            };
+
+            ws.onmessage = function(event) {
+                console.log("WebSocket message received:", event.data);
+                try {
+                    const message = JSON.parse(event.data);
+                    if (message.type === 'donation' && message.data) {
+                        addDonationEntry(message.data);
+                    } else if (message.type === 'listener_status') {
+                        console.log("Received listener status update:", message.status);
+                        if (message.status === 'connected') {
+                            setStatus(listenerStatusDiv, 'Listener Status: Running and Connected to DA', 'status-ok');
+                        } else if (message.status === 'disconnected' || message.status === 'stopped') {
+                            setStatus(listenerStatusDiv, 'Listener Status: Disconnected/Stopped', 'status-error');
+                        } else {
+                            setStatus(listenerStatusDiv, `Listener Status: ${message.status}`, 'status-warn');
+                        }
+                    } else {
+                        console.warn("Received unhandled message type:", message);
+                    }
+                } catch (e) {
+                    console.error("Failed to parse WebSocket message:", e);
+                    setStatus(wsStatusDiv, `WebSocket Status: Error parsing message`, 'status-error');
+                }
+            };
+
+            ws.onerror = function(event) {
+                console.error("WebSocket error observed:", event);
+                setStatus(wsStatusDiv, 'WebSocket Status: Error', 'status-error');
+            };
+
+            ws.onclose = function(event) {
+                console.log("WebSocket connection closed:", event.code, event.reason);
+                setStatus(wsStatusDiv, `WebSocket Status: Closed (Code: ${event.code})`, 'status-error');
+                ws = null; // Clear reference
+                // Optionally attempt to reconnect after a delay if authenticated
+                // if (isAuthenticated) {
+                //    console.log("Attempting to reconnect WebSocket in 5 seconds...");
+                //    setTimeout(connectWebSocket, 5000);
+                // }
+            };
+        }
+
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                console.log("WebSocket connection closed by client.");
+            }
+        }
+
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/status');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const status = await response.json();
+
+                isAuthenticated = status.authenticated; // Update global auth state
+
+                if (status.authenticated) {
+                    setStatus(authStatusDiv, 'Auth Status: Authenticated with DonationAlerts', 'status-ok');
+                    loginButton.style.display = 'none';
+                    logoutButton.style.display = 'inline-block';
+                    listenerSection.style.display = 'block';
+                    donationsLogContainer.style.display = 'block';
+
+                    // Update listener status based on polling - WebSocket message might update it faster
+                    // Only update from polling if WS hasn't already set it to connected.
+                    // This prevents polling from overwriting a fast "connected" message with a slower "disconnected" one initially.
+                    if (!listenerStatusDiv.classList.contains('status-ok')) {
+                        if (status.listener_running) {
+                            if (status.listener_connected) {
+                                setStatus(listenerStatusDiv, 'Listener Status: Running and Connected to DA', 'status-ok');
+                            } else {
+                                setStatus(listenerStatusDiv, 'Listener Status: Running but Disconnected from DA (retrying...)', 'status-warn');
+                            }
+                        } else {
+                            setStatus(listenerStatusDiv, 'Listener Status: Not Running (Check backend logs)', 'status-error');
+                        }
+                    }
+
+                    // Connect WebSocket if authenticated and not already connected/connecting
+                    connectWebSocket();
+
+                } else {
+                    setStatus(authStatusDiv, 'Auth Status: Not Authenticated', 'status-warn');
+                    loginButton.style.display = 'inline-block';
+                    logoutButton.style.display = 'none';
+                    listenerSection.style.display = 'none';
+                    donationsLogContainer.style.display = 'none';
+                    setStatus(listenerStatusDiv, 'Listener Status: Unknown', '');
+                    setStatus(wsStatusDiv, 'WebSocket Status: Disconnected', '');
+                    disconnectWebSocket(); // Ensure WS is closed if not authenticated
+                }
+
+            } catch (error) {
+                console.error('Error checking status:', error);
+                setStatus(authStatusDiv, 'Auth Status: Error checking status', 'status-error');
+                setStatus(listenerStatusDiv, 'Listener Status: Unknown', '');
+                setStatus(wsStatusDiv, 'WebSocket Status: Disconnected', '');
+                listenerSection.style.display = 'none';
+                donationsLogContainer.style.display = 'none';
+                loginButton.style.display = 'inline-block'; // Show login on error
+                logoutButton.style.display = 'none';
+            }
+        }
+
+        async function handleLogout() {
+            try {
+                const response = await fetch('/api/auth/donationalerts/logout', {
+                    method: 'POST'
+                });
+                if (!response.ok) {
+                    throw new Error(`Logout failed: ${response.statusText}`);
+                }
+                console.log("Logout successful");
+                // Refresh status immediately after logout
+                checkStatus();
+                // Clear donation log on logout
+                donationsLog.innerHTML = '<p><i>Logged out. Log in to see donations.</i></p>';
+            } catch (error) {
+                console.error("Logout error:", error);
+                errorDisplay.textContent = `Logout failed: ${error.message}`;
+            }
+        }
+
+
+        // --- Initialization ---
+        loginButton.onclick = () => {
+            window.location.href = '/api/auth/donationalerts/login';
+        };
+
+        logoutButton.onclick = handleLogout;
+
+
+        // Check for OAuth errors passed in URL query params on load
+        const urlParams = new URLSearchParams(window.location.search);
+        const oauthError = urlParams.get('error');
+        const oauthStatus = urlParams.get('status');
+
+        if (oauthError) {
+            errorDisplay.textContent = `OAuth Error: ${decodeURIComponent(oauthError)}`;
+        } else if (oauthStatus === 'success') {
+            // Optionally show a success message briefly
+            console.log("OAuth successful.");
+            // Remove status from URL to avoid showing it on refresh
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
+
+        // Initial status check on page load
+        checkStatus();
+
+        // Periodically check status to update listener/WS info
+        setInterval(checkStatus, 15000); // Check every 15 seconds
+    </script>
+
+</body>
+
+</html>
